@@ -344,7 +344,7 @@ type
 template OnBlockAddedCallback*(kind: static ConsensusFork): auto =
   when kind == ConsensusFork.Fulu:
     typedesc[OnFuluBlockAdded]
-  when kind == ConsensusFork.Electra:
+  elif kind == ConsensusFork.Electra:
     typedesc[OnElectraBlockAdded]
   elif kind == ConsensusFork.Deneb:
     typedesc[OnDenebBlockAdded]

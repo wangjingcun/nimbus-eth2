@@ -168,6 +168,9 @@ func noRollback*(state: var deneb.HashedBeaconState) =
 func noRollback*(state: var electra.HashedBeaconState) =
   trace "Skipping rollback of broken Electra state"
 
+func noRollback*(state: var fulu.HashedBeaconState) =
+  trace "Skipping rollback of broken Fulu state"
+
 func maybeUpgradeStateToAltair(
     cfg: RuntimeConfig, state: var ForkedHashedBeaconState) =
   # Both process_slots() and state_transition_block() call this, so only run it
