@@ -13,12 +13,14 @@ import
   metrics, metrics/chronos_httpserver,
   stew/[byteutils, io2],
   eth/p2p/discoveryv5/[enr, random2],
-  ./consensus_object_pools/blob_quarantine,
+  ./consensus_object_pools/[blob_quarantine, data_column_quarantine],
   ./consensus_object_pools/vanity_logs/vanity_logs,
   ./networking/[topic_params, network_metadata_downloads],
   ./rpc/[rest_api, state_ttl_cache],
   ./spec/datatypes/[altair, bellatrix, phase0],
-  ./spec/[deposit_snapshots, engine_authentication, weak_subjectivity],
+  ./spec/[
+    deposit_snapshots, engine_authentication, weak_subjectivity,
+    eip7594_helpers],
   ./sync/[sync_protocol, light_client_protocol],
   ./validators/[keystore_management, beacon_validators],
   "."/[
@@ -281,8 +283,10 @@ proc initFullNode(
     getBeaconTime: GetBeaconTimeFn) {.async.} =
   template config(): auto = node.config
 
-  proc onAttestationReceived(data: phase0.Attestation) =
+  proc onPhase0AttestationReceived(data: phase0.Attestation) =
     node.eventBus.attestQueue.emit(data)
+  proc onElectraAttestationReceived(data: electra.Attestation) =
+    debugComment "electra attestation queue"
   proc onSyncContribution(data: SignedContributionAndProof) =
     node.eventBus.contribQueue.emit(data)
   proc onVoluntaryExitAdded(data: SignedVoluntaryExit) =
@@ -291,8 +295,10 @@ proc initFullNode(
     node.eventBus.blsToExecQueue.emit(data)
   proc onProposerSlashingAdded(data: ProposerSlashing) =
     node.eventBus.propSlashQueue.emit(data)
-  proc onAttesterSlashingAdded(data: phase0.AttesterSlashing) =
+  proc onPhase0AttesterSlashingAdded(data: phase0.AttesterSlashing) =
     node.eventBus.attSlashQueue.emit(data)
+  proc onElectraAttesterSlashingAdded(data: electra.AttesterSlashing) =
+    debugComment "electra att slasher queue"
   proc onBlobSidecarAdded(data: BlobSidecarInfoObject) =
     node.eventBus.blobSidecarQueue.emit(data)
   proc onBlockAdded(data: ForkedTrustedSignedBeaconBlock) =
@@ -385,15 +391,24 @@ proc initFullNode(
     quarantine = newClone(
       Quarantine.init())
     attestationPool = newClone(AttestationPool.init(
-      dag, quarantine, onAttestationReceived))
+      dag, quarantine, onPhase0AttestationReceived,
+      onElectraAttestationReceived))
     syncCommitteeMsgPool = newClone(
       SyncCommitteeMsgPool.init(rng, dag.cfg, onSyncContribution))
     lightClientPool = newClone(
       LightClientPool())
     validatorChangePool = newClone(ValidatorChangePool.init(
       dag, attestationPool, onVoluntaryExitAdded, onBLSToExecutionChangeAdded,
-      onProposerSlashingAdded, onAttesterSlashingAdded))
+      onProposerSlashingAdded, onPhase0AttesterSlashingAdded,
+      onElectraAttesterSlashingAdded))
     blobQuarantine = newClone(BlobQuarantine.init(onBlobSidecarAdded))
+    dataColumnQuarantine = newClone(DataColumnQuarantine.init())
+    supernode = node.config.subscribeAllSubnets
+    localCustodySubnets = 
+      if supernode:
+        DATA_COLUMN_SIDECAR_SUBNET_COUNT.uint64
+      else:
+        CUSTODY_REQUIREMENT.uint64
     consensusManager = ConsensusManager.new(
       dag, attestationPool, quarantine, node.elManager,
       ActionTracker.init(node.network.nodeId, config.subscribeAllSubnets),
@@ -480,7 +495,30 @@ proc initFullNode(
       (proc(): bool = syncManager.inProgress),
       quarantine, blobQuarantine, rmanBlockVerifier,
       rmanBlockLoader, rmanBlobLoader)
+  
+  # As per EIP 7594, the BN is now categorised into a 
+  # `Fullnode` and a `Supernode`, the fullnodes custodies a
+  # given set of data columns, and hence ONLY subcribes to those
+  # data column subnet topics, however, the supernodes subscribe
+  # to all of the topics. This in turn keeps our `data column quarantine`
+  # really variable. Whenever the BN is a supernode, column quarantine
+  # essentially means all the NUMBER_OF_COLUMNS, as per mentioned in the 
+  # spec. However, in terms of fullnode, quarantine is really dependent
+  # on the randomly assigned columns, by `get_custody_columns`.
 
+  # Hence, in order to keep column quarantine accurate and error proof
+  # the custody columns are computed once as the BN boots. Then the values
+  # are used globally around the codebase. 
+
+  # `get_custody_columns` is not a very expensive function, but there
+  # are multiple instances of computing custody columns, especially 
+  # during peer selection, sync with columns, and so on. That is why,
+  # the rationale of populating it at boot and using it gloabally.
+
+  dataColumnQuarantine[].supernode = supernode
+  dataColumnQuarantine[].custody_columns = 
+    node.network.nodeId.get_custody_columns(max(SAMPLES_PER_SLOT.uint64,
+                                            localCustodySubnets))
   if node.config.lightClientDataServe:
     proc scheduleSendingLightClientUpdates(slot: Slot) =
       if node.lightClientPool[].broadcastGossipFut != nil:
@@ -858,9 +896,6 @@ proc init*(T: type BeaconNode,
 
   func getDenebForkEpoch(): Opt[Epoch] =
     Opt.some(cfg.DENEB_FORK_EPOCH)
-
-  func getElectraForkEpoch(): Opt[Epoch] =
-    Opt.some(cfg.ELECTRA_FORK_EPOCH)
 
   proc getForkForEpoch(epoch: Epoch): Opt[Fork] =
     Opt.some(dag.forkAtEpoch(epoch))
@@ -1790,7 +1825,7 @@ proc installMessageValidators(node: BeaconNode) =
       let digest = forkDigests[].atConsensusFork(consensusFork)
 
       # beacon_block
-      # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.6/specs/phase0/p2p-interface.md#beacon_block
+      # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.8/specs/phase0/p2p-interface.md#beacon_block
       node.network.addValidator(
         getBeaconBlocksTopic(digest), proc (
           signedBlock: consensusFork.SignedBeaconBlock
@@ -1854,16 +1889,26 @@ proc installMessageValidators(node: BeaconNode) =
 
       # attester_slashing
       # https://github.com/ethereum/consensus-specs/blob/v1.4.0-beta.5/specs/phase0/p2p-interface.md#attester_slashing
-      node.network.addValidator(
-        getAttesterSlashingsTopic(digest), proc (
-          attesterSlashing: phase0.AttesterSlashing
-        ): ValidationResult =
-          toValidationResult(
-            node.processor[].processAttesterSlashing(
-              MsgSource.gossip, attesterSlashing)))
+      # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.6/specs/electra/p2p-interface.md#modifications-in-electra
+      when consensusFork >= ConsensusFork.Electra:
+        node.network.addValidator(
+          getAttesterSlashingsTopic(digest), proc (
+            attesterSlashing: electra.AttesterSlashing
+          ): ValidationResult =
+            toValidationResult(
+              node.processor[].processAttesterSlashing(
+                MsgSource.gossip, attesterSlashing)))
+      else:
+        node.network.addValidator(
+          getAttesterSlashingsTopic(digest), proc (
+            attesterSlashing: phase0.AttesterSlashing
+          ): ValidationResult =
+            toValidationResult(
+              node.processor[].processAttesterSlashing(
+                MsgSource.gossip, attesterSlashing)))
 
       # proposer_slashing
-      # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.6/specs/phase0/p2p-interface.md#proposer_slashing
+      # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.8/specs/phase0/p2p-interface.md#proposer_slashing
       node.network.addValidator(
         getProposerSlashingsTopic(digest), proc (
           proposerSlashing: ProposerSlashing
@@ -1907,7 +1952,7 @@ proc installMessageValidators(node: BeaconNode) =
                 MsgSource.gossip, msg)))
 
       when consensusFork >= ConsensusFork.Capella:
-        # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.6/specs/capella/p2p-interface.md#bls_to_execution_change
+        # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.8/specs/capella/p2p-interface.md#bls_to_execution_change
         node.network.addAsyncValidator(
           getBlsToExecutionChangeTopic(digest), proc (
             msg: SignedBLSToExecutionChange

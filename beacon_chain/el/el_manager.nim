@@ -34,12 +34,23 @@ export
 logScope:
   topics = "elman"
 
+const
+  SleepDurations =
+    [100.milliseconds, 200.milliseconds, 500.milliseconds, 1.seconds]
+
 type
+  FixedBytes[N: static int] =  web3.FixedBytes[N]
   PubKeyBytes = DynamicBytes[48, 48]
   WithdrawalCredentialsBytes = DynamicBytes[32, 32]
   SignatureBytes = DynamicBytes[96, 96]
   Int64LeBytes = DynamicBytes[8, 8]
   WithoutTimeout* = distinct int
+  Address = web3.Address
+
+  DeadlineObject* = object
+    # TODO (cheatfate): This object declaration could be removed when
+    # `Raising()` macro starts to support procedure arguments.
+    future*: Future[void].Raising([CancelledError])
 
   SomeEnginePayloadWithValue =
     BellatrixExecutionPayloadWithValue |
@@ -230,6 +241,22 @@ declareCounter engine_api_timeouts,
 declareCounter engine_api_last_minute_forkchoice_updates_sent,
   "Number of last minute requests to the forkchoiceUpdated Engine API end-point just before block proposals",
   labels = ["url"]
+
+proc init*(t: typedesc[DeadlineObject], d: Duration): DeadlineObject =
+  DeadlineObject(future: sleepAsync(d))
+
+proc variedSleep*(
+    counter: var int,
+    durations: openArray[Duration]
+): Future[void] {.async: (raises: [CancelledError], raw: true).} =
+  doAssert(len(durations) > 0, "Empty durations array!")
+  let index =
+    if (counter < 0) or (counter > high(durations)):
+      high(durations)
+    else:
+      counter
+  inc(counter)
+  sleepAsync(durations[index])
 
 proc close(connection: ELConnection): Future[void] {.async: (raises: []).} =
   if connection.web3.isSome:
@@ -532,7 +559,7 @@ proc getPayloadFromSingleEL(
             prevRandao: FixedBytes[32] randomData.data,
             suggestedFeeRecipient: suggestedFeeRecipient,
             withdrawals: withdrawals,
-            parentBeaconBlockRoot: consensusHead.asBlockHash))
+            parentBeaconBlockRoot: consensusHead.to(Hash32)))
       else:
         static: doAssert false
 
@@ -815,17 +842,19 @@ proc sendNewPayloadToSingleEL(
 ): Future[PayloadStatusV1] {.async: (raises: [CatchableError]).} =
   let rpcClient = await connection.connectedRpcClient()
   await rpcClient.engine_newPayloadV3(
-    payload, versioned_hashes, parent_beacon_block_root)
+    payload, versioned_hashes, Hash32 parent_beacon_block_root)
 
 proc sendNewPayloadToSingleEL(
     connection: ELConnection,
-    payload: engine_api.ExecutionPayloadV4,
+    payload: engine_api.ExecutionPayloadV3,
     versioned_hashes: seq[engine_api.VersionedHash],
-    parent_beacon_block_root: FixedBytes[32]
+    parent_beacon_block_root: FixedBytes[32],
+    executionRequests: array[3, seq[byte]]
 ): Future[PayloadStatusV1] {.async: (raises: [CatchableError]).} =
   let rpcClient = await connection.connectedRpcClient()
   await rpcClient.engine_newPayloadV4(
-    payload, versioned_hashes, parent_beacon_block_root)
+    payload, versioned_hashes, Hash32 parent_beacon_block_root,
+    executionRequests)
 
 type
   StatusRelation = enum
@@ -938,22 +967,38 @@ proc lazyWait(futures: seq[FutureBase]) {.async: (raises: []).} =
 
 proc sendNewPayload*(
     m: ELManager,
-    blck: SomeForkyBeaconBlock
+    blck: SomeForkyBeaconBlock,
+    deadlineObj: DeadlineObject,
+    maxRetriesCount: int
 ): Future[PayloadExecutionStatus] {.async: (raises: [CancelledError]).} =
+  doAssert maxRetriesCount > 0
+
   let
     startTime = Moment.now()
-    deadline = sleepAsync(NEWPAYLOAD_TIMEOUT)
+    deadline = deadlineObj.future
     payload = blck.body.asEngineExecutionPayload
   var
     responseProcessor = ELConsensusViolationDetector.init()
+    sleepCounter = 0
+    retriesCount = 0
 
   while true:
     block mainLoop:
       let
         requests = m.elConnections.mapIt:
           let req =
-            when payload is engine_api.ExecutionPayloadV3 or
-                 payload is engine_api.ExecutionPayloadV4:
+            when typeof(blck).kind == ConsensusFork.Electra:
+              # https://github.com/ethereum/execution-apis/blob/4140e528360fea53c34a766d86a000c6c039100e/src/engine/prague.md#engine_newpayloadv4
+              let versioned_hashes = mapIt(
+                blck.body.blob_kzg_commitments,
+                engine_api.VersionedHash(kzg_commitment_to_versioned_hash(it)))
+              sendNewPayloadToSingleEL(
+                it, payload, versioned_hashes,
+                FixedBytes[32] blck.parent_root.data,
+                [SSZ.encode(blck.body.execution_requests.deposits),
+                 SSZ.encode(blck.body.execution_requests.withdrawals),
+                 SSZ.encode(blck.body.execution_requests.consolidations)])
+            elif typeof(blck).kind == ConsensusFork.Deneb:
               # https://github.com/ethereum/consensus-specs/blob/v1.4.0-alpha.1/specs/deneb/beacon-chain.md#process_execution_payload
               # Verify the execution payload is valid
               # [Modified in Deneb] Pass `versioned_hashes` to Execution Engine
@@ -963,8 +1008,7 @@ proc sendNewPayload*(
               sendNewPayloadToSingleEL(
                 it, payload, versioned_hashes,
                 FixedBytes[32] blck.parent_root.data)
-            elif payload is engine_api.ExecutionPayloadV1 or
-                 payload is engine_api.ExecutionPayloadV2:
+            elif typeof(blck).kind in [ConsensusFork.Bellatrix, ConsensusFork.Capella]:
               sendNewPayloadToSingleEL(it, payload)
             else:
               static: doAssert false
@@ -1020,17 +1064,22 @@ proc sendNewPayload*(
           return PayloadExecutionStatus.syncing
 
         if len(pendingRequests) == 0:
-          # All requests failed, we will continue our attempts until deadline
-          # is not finished.
+          # All requests failed.
+          inc(retriesCount)
+          if retriesCount == maxRetriesCount:
+            return PayloadExecutionStatus.syncing
 
           # To avoid continous spam of requests when EL node is offline we
-          # going to sleep until next attempt for
-          # (NEWPAYLOAD_TIMEOUT / 4) time (2.seconds).
-          let timeout =
-            chronos.nanoseconds(NEWPAYLOAD_TIMEOUT.nanoseconds div 4)
-          await sleepAsync(timeout)
-
+          # going to sleep until next attempt.
+          await variedSleep(sleepCounter, SleepDurations)
           break mainLoop
+
+proc sendNewPayload*(
+    m: ELManager,
+    blck: SomeForkyBeaconBlock
+): Future[PayloadExecutionStatus] {.
+    async: (raises: [CancelledError], raw: true).} =
+  sendNewPayload(m, blck, DeadlineObject.init(NEWPAYLOAD_TIMEOUT), high(int))
 
 proc forkchoiceUpdatedForSingleEL(
     connection: ELConnection,
@@ -1059,11 +1108,14 @@ proc forkchoiceUpdated*(
     headBlockHash, safeBlockHash, finalizedBlockHash: Eth2Digest,
     payloadAttributes: Opt[PayloadAttributesV1] |
                        Opt[PayloadAttributesV2] |
-                       Opt[PayloadAttributesV3]
+                       Opt[PayloadAttributesV3],
+    deadlineObj: DeadlineObject,
+    maxRetriesCount: int
 ): Future[(PayloadExecutionStatus, Opt[BlockHash])] {.
    async: (raises: [CancelledError]).} =
 
   doAssert not headBlockHash.isZero
+  doAssert maxRetriesCount > 0
 
   # Allow finalizedBlockHash to be 0 to avoid sync deadlocks.
   #
@@ -1072,7 +1124,7 @@ proc forkchoiceUpdated*(
   # block hash provided by this event is stubbed with
   # `0x0000000000000000000000000000000000000000000000000000000000000000`."
   # and
-  # https://github.com/ethereum/consensus-specs/blob/v1.4.0/specs/bellatrix/validator.md#executionpayload
+  # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.8/specs/bellatrix/validator.md#executionpayload
   # notes "`finalized_block_hash` is the hash of the latest finalized execution
   # payload (`Hash32()` if none yet finalized)"
 
@@ -1094,7 +1146,7 @@ proc forkchoiceUpdated*(
           prevRandao: payloadAttributes.get.prevRandao,
           suggestedFeeRecipient: payloadAttributes.get.suggestedFeeRecipient,
           withdrawals: payloadAttributes.get.withdrawals,
-          parentBeaconBlockRoot: static(default(FixedBytes[32])))
+          parentBeaconBlockRoot: default(Hash32))
       else:
         # As timestamp and prevRandao are both 0, won't false-positive match
         (static(default(PayloadAttributesV3)))
@@ -1106,7 +1158,7 @@ proc forkchoiceUpdated*(
           prevRandao: payloadAttributes.get.prevRandao,
           suggestedFeeRecipient: payloadAttributes.get.suggestedFeeRecipient,
           withdrawals: @[],
-          parentBeaconBlockRoot: static(default(FixedBytes[32])))
+          parentBeaconBlockRoot: default(Hash32))
       else:
         # As timestamp and prevRandao are both 0, won't false-positive match
         (static(default(PayloadAttributesV3)))
@@ -1119,9 +1171,12 @@ proc forkchoiceUpdated*(
       safeBlockHash: safeBlockHash.asBlockHash,
       finalizedBlockHash: finalizedBlockHash.asBlockHash)
     startTime = Moment.now
-    deadline = sleepAsync(FORKCHOICEUPDATED_TIMEOUT)
+    deadline = deadlineObj.future
+
   var
     responseProcessor = ELConsensusViolationDetector.init()
+    sleepCounter = 0
+    retriesCount = 0
 
   while true:
     block mainLoop:
@@ -1203,15 +1258,27 @@ proc forkchoiceUpdated*(
         if len(pendingRequests) == 0:
           # All requests failed, we will continue our attempts until deadline
           # is not finished.
+          inc(retriesCount)
+          if retriesCount == maxRetriesCount:
+            return (PayloadExecutionStatus.syncing, Opt.none BlockHash)
 
           # To avoid continous spam of requests when EL node is offline we
-          # going to sleep until next attempt for
-          # (FORKCHOICEUPDATED_TIMEOUT / 4) time (2.seconds).
-          let timeout =
-            chronos.nanoseconds(FORKCHOICEUPDATED_TIMEOUT.nanoseconds div 4)
-          await sleepAsync(timeout)
-
+          # going to sleep until next attempt.
+          await variedSleep(sleepCounter, SleepDurations)
           break mainLoop
+
+proc forkchoiceUpdated*(
+    m: ELManager,
+    headBlockHash, safeBlockHash, finalizedBlockHash: Eth2Digest,
+    payloadAttributes: Opt[PayloadAttributesV1] |
+                       Opt[PayloadAttributesV2] |
+                       Opt[PayloadAttributesV3]
+): Future[(PayloadExecutionStatus, Opt[BlockHash])] {.
+    async: (raises: [CancelledError], raw: true).} =
+  forkchoiceUpdated(
+    m, headBlockHash, safeBlockHash, finalizedBlockHash,
+    payloadAttributes, DeadlineObject.init(FORKCHOICEUPDATED_TIMEOUT),
+    high(int))
 
 # TODO can't be defined within exchangeConfigWithSingleEL
 func `==`(x, y: Quantity): bool {.borrow.}

@@ -16,12 +16,12 @@ import
   "."/[
     block_id, eth2_merkleization, eth2_ssz_serialization,
     forks_light_client, presets],
-  ./datatypes/[phase0, altair, bellatrix, capella, deneb, electra],
+  ./datatypes/[phase0, altair, bellatrix, capella, deneb, electra, eip7594],
   ./mev/[bellatrix_mev, capella_mev, deneb_mev, electra_mev]
 
 export
   extras, block_id, phase0, altair, bellatrix, capella, deneb, electra,
-  eth2_merkleization, eth2_ssz_serialization, forks_light_client,
+  eip7594, eth2_merkleization, eth2_ssz_serialization, forks_light_client,
   presets, deneb_mev, electra_mev
 
 # This file contains helpers for dealing with forks - we have two ways we can
@@ -83,7 +83,8 @@ type
   ForkyExecutionPayloadHeader* =
     bellatrix.ExecutionPayloadHeader |
     capella.ExecutionPayloadHeader |
-    deneb.ExecutionPayloadHeader
+    deneb.ExecutionPayloadHeader |
+    electra.ExecutionPayloadHeader
 
   ForkyBeaconBlockBody* =
     phase0.BeaconBlockBody |
@@ -152,6 +153,36 @@ type
   ForkyBlindedBeaconBlock* =
     deneb_mev.BlindedBeaconBlock |
     electra_mev.BlindedBeaconBlock
+
+  ForkyAggregateAndProof* =
+    phase0.AggregateAndProof |
+    electra.AggregateAndProof
+
+  ForkySignedAggregateAndProof* =
+    phase0.SignedAggregateAndProof |
+    electra.SignedAggregateAndProof
+
+  ForkyAttestation* =
+    phase0.Attestation |
+    electra.Attestation
+
+  ForkedAttestation* = object
+    case kind*: ConsensusFork
+    of ConsensusFork.Phase0:    phase0Data*:    phase0.Attestation
+    of ConsensusFork.Altair:    altairData*:    phase0.Attestation
+    of ConsensusFork.Bellatrix: bellatrixData*: phase0.Attestation
+    of ConsensusFork.Capella:   capellaData*:   phase0.Attestation
+    of ConsensusFork.Deneb:     denebData*:     phase0.Attestation
+    of ConsensusFork.Electra:   electraData*:   electra.Attestation
+
+  ForkedAggregateAndProof* = object
+    case kind*: ConsensusFork
+    of ConsensusFork.Phase0:    phase0Data*:    phase0.AggregateAndProof
+    of ConsensusFork.Altair:    altairData*:    phase0.AggregateAndProof
+    of ConsensusFork.Bellatrix: bellatrixData*: phase0.AggregateAndProof
+    of ConsensusFork.Capella:   capellaData*:   phase0.AggregateAndProof
+    of ConsensusFork.Deneb:     denebData*:     phase0.AggregateAndProof
+    of ConsensusFork.Electra:   electraData*:   electra.AggregateAndProof
 
   ForkedBeaconBlock* = object
     case kind*: ConsensusFork
@@ -305,7 +336,10 @@ template kind*(
       phase0.TrustedBeaconBlockBody |
       phase0.SigVerifiedSignedBeaconBlock |
       phase0.MsgTrustedSignedBeaconBlock |
-      phase0.TrustedSignedBeaconBlock]): ConsensusFork =
+      phase0.TrustedSignedBeaconBlock |
+      phase0.Attestation |
+      phase0.AggregateAndProof |
+      phase0.SignedAggregateAndProof]): ConsensusFork =
   ConsensusFork.Phase0
 
 template kind*(
@@ -396,6 +430,9 @@ template kind*(
       electra.SigVerifiedSignedBeaconBlock |
       electra.MsgTrustedSignedBeaconBlock |
       electra.TrustedSignedBeaconBlock |
+      electra.Attestation |
+      electra.AggregateAndProof |
+      electra.SignedAggregateAndProof |
       electra_mev.SignedBlindedBeaconBlock]): ConsensusFork =
   ConsensusFork.Electra
 
@@ -1221,6 +1258,61 @@ template withStateAndBlck*(
     template forkyBlck: untyped {.inject, used.} = b.phase0Data
     body
 
+template withAttestation*(a: ForkedAttestation, body: untyped): untyped =
+  case a.kind
+  of ConsensusFork.Electra:
+    const consensusFork {.inject, used.} = ConsensusFork.Electra
+    template forkyAttestation: untyped {.inject.} = a.electraData
+    body
+  of ConsensusFork.Deneb:
+    const consensusFork {.inject, used.} = ConsensusFork.Deneb
+    template forkyAttestation: untyped {.inject.} = a.denebData
+    body
+  of ConsensusFork.Capella:
+    const consensusFork {.inject, used.} = ConsensusFork.Capella
+    template forkyAttestation: untyped {.inject.} = a.capellaData
+    body
+  of ConsensusFork.Bellatrix:
+    const consensusFork {.inject, used.} = ConsensusFork.Bellatrix
+    template forkyAttestation: untyped {.inject.} = a.bellatrixData
+    body
+  of ConsensusFork.Altair:
+    const consensusFork {.inject, used.} = ConsensusFork.Altair
+    template forkyAttestation: untyped {.inject.} = a.altairData
+    body
+  of ConsensusFork.Phase0:
+    const consensusFork {.inject, used.} = ConsensusFork.Phase0
+    template forkyAttestation: untyped {.inject.} = a.phase0Data
+    body
+
+template withAggregateAndProof*(a: ForkedAggregateAndProof,
+                                body: untyped): untyped =
+  case a.kind
+  of ConsensusFork.Electra:
+    const consensusFork {.inject, used.} = ConsensusFork.Electra
+    template forkyProof: untyped {.inject.} = a.electraData
+    body
+  of ConsensusFork.Deneb:
+    const consensusFork {.inject, used.} = ConsensusFork.Deneb
+    template forkyProof: untyped {.inject.} = a.denebData
+    body
+  of ConsensusFork.Capella:
+    const consensusFork {.inject, used.} = ConsensusFork.Capella
+    template forkyProof: untyped {.inject.} = a.capellaData
+    body
+  of ConsensusFork.Bellatrix:
+    const consensusFork {.inject, used.} = ConsensusFork.Bellatrix
+    template forkyProof: untyped {.inject.} = a.bellatrixData
+    body
+  of ConsensusFork.Altair:
+    const consensusFork {.inject, used.} = ConsensusFork.Altair
+    template forkyProof: untyped {.inject.} = a.altairData
+    body
+  of ConsensusFork.Phase0:
+    const consensusFork {.inject, used.} = ConsensusFork.Phase0
+    template forkyProof: untyped {.inject.} = a.phase0Data
+    body
+
 func toBeaconBlockHeader*(
     blck: SomeForkyBeaconBlock | deneb_mev.BlindedBeaconBlock |
     electra_mev.BlindedBeaconBlock): BeaconBlockHeader =
@@ -1337,14 +1429,15 @@ func lcDataForkAtConsensusFork*(
   else:
     LightClientDataFork.None
 
-func getForkSchedule*(cfg: RuntimeConfig): array[5, Fork] =
+func getForkSchedule*(cfg: RuntimeConfig): array[6, Fork] =
   ## This procedure returns list of known and/or scheduled forks.
   ##
   ## This procedure is used by HTTP REST framework and validator client.
   ##
   ## NOTE: Update this procedure when new fork will be scheduled.
+  static: doAssert high(ConsensusFork) == ConsensusFork.Electra
   [cfg.genesisFork(), cfg.altairFork(), cfg.bellatrixFork(), cfg.capellaFork(),
-   cfg.denebFork()]
+   cfg.denebFork(), cfg.electraFork()]
 
 type
   # The first few fields of a state, shared across all forks
@@ -1549,3 +1642,57 @@ func committee_index*(v: electra.Attestation, on_chain: static bool): uint64 =
     {.error: "cannot get single committee_index for on_chain attestation".}
   else:
     uint64 v.committee_bits.get_committee_index_one().expect("network attestation")
+
+template init*(T: type ForkedAttestation,
+               attestation: phase0.Attestation,
+               fork: ConsensusFork): T =
+  case fork
+  of ConsensusFork.Phase0:
+    ForkedAttestation(kind: ConsensusFork.Phase0, phase0Data: attestation)
+  of ConsensusFork.Altair:
+    ForkedAttestation(kind: ConsensusFork.Altair, altairData: attestation)
+  of ConsensusFork.Bellatrix:
+    ForkedAttestation(kind: ConsensusFork.Bellatrix, bellatrixData: attestation)
+  of ConsensusFork.Capella:
+    ForkedAttestation(kind: ConsensusFork.Capella, capellaData: attestation)
+  of ConsensusFork.Deneb:
+    ForkedAttestation(kind: ConsensusFork.Deneb, denebData: attestation)
+  of ConsensusFork.Electra:
+    raiseAssert $fork & " fork should not be used for this type of attestation"
+
+template init*(T: type ForkedAttestation,
+               attestation: electra.Attestation,
+               fork: ConsensusFork): T =
+  case fork
+  of ConsensusFork.Phase0 .. ConsensusFork.Deneb:
+    raiseAssert $fork & " fork should not be used for this type of attestation"
+  of ConsensusFork.Electra:
+    ForkedAttestation(kind: ConsensusFork.Electra, electraData: attestation)
+
+template init*(T: type ForkedAggregateAndProof,
+               proof: phase0.AggregateAndProof,
+               fork: ConsensusFork): T =
+  case fork
+  of ConsensusFork.Phase0:
+    ForkedAggregateAndProof(kind: ConsensusFork.Phase0, phase0Data: proof)
+  of ConsensusFork.Altair:
+    ForkedAggregateAndProof(kind: ConsensusFork.Altair, altairData: proof)
+  of ConsensusFork.Bellatrix:
+    ForkedAggregateAndProof(kind: ConsensusFork.Bellatrix, bellatrixData: proof)
+  of ConsensusFork.Capella:
+    ForkedAggregateAndProof(kind: ConsensusFork.Capella, capellaData: proof)
+  of ConsensusFork.Deneb:
+    ForkedAggregateAndProof(kind: ConsensusFork.Deneb, denebData: proof)
+  of ConsensusFork.Electra:
+    raiseAssert $fork &
+      " fork should not be used for this type of aggregate and proof"
+
+template init*(T: type ForkedAggregateAndProof,
+               proof: electra.AggregateAndProof,
+               fork: ConsensusFork): T =
+  case fork
+  of ConsensusFork.Phase0 .. ConsensusFork.Deneb:
+    raiseAssert $fork &
+      " fork should not be used for this type of aggregate and proof"
+  of ConsensusFork.Electra:
+    ForkedAggregateAndProof(kind: ConsensusFork.Electra, electraData: proof)
