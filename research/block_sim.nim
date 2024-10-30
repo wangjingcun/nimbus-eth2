@@ -85,7 +85,8 @@ proc makeSimulationBlock(
 
   var blck = partialBeaconBlock(
     cfg, state, proposer_index, randao_reveal, eth1_data, graffiti,
-    attestations, deposits, exits, sync_aggregate, execution_payload)
+    attestations, deposits, exits, sync_aggregate, execution_payload,
+    default(ExecutionRequests))
 
   let res = process_block(
     cfg, state.data, blck.asSigVerified(), verificationFlags, cache)
@@ -128,7 +129,8 @@ proc makeSimulationBlock(
 
   var blck = partialBeaconBlock(
     cfg, state, proposer_index, randao_reveal, eth1_data, graffiti,
-    attestations, deposits, exits, sync_aggregate, execution_payload)
+    attestations, deposits, exits, sync_aggregate, execution_payload,
+    default(ExecutionRequests))
 
   let res = process_block(
     cfg, state.data, blck.asSigVerified(), verificationFlags, cache)
@@ -239,7 +241,7 @@ cli do(slots = SLOTS_PER_EPOCH * 7,
                     fork, genesis_validators_root, data,
                     MockPrivKeys[validator_index])
                 attestation = electra.Attestation(
-                  # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.1/specs/electra/validator.md#construct-attestation
+                  # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.8/specs/electra/validator.md#construct-attestation
                   aggregation_bits: aggregation_bits,
                   data: data,
                   committee_bits: committee_bits,
