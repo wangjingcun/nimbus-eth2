@@ -196,7 +196,8 @@ proc stepOnBlock(
     state,
     dag.getBlockIdAtSlot(time.slotOrZero).expect("block exists"),
     save = false,
-    stateCache
+    stateCache,
+    dag.updateFlags
   )
 
   # 3. Add block to DAG
