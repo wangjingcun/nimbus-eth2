@@ -298,10 +298,12 @@ type
   OnCapellaBlockAdded* = OnBlockAdded[capella.TrustedSignedBeaconBlock]
   OnDenebBlockAdded* = OnBlockAdded[deneb.TrustedSignedBeaconBlock]
   OnElectraBlockAdded* = OnBlockAdded[electra.TrustedSignedBeaconBlock]
+  OnFuluBlockAdded* = OnBlockAdded[fulu.TrustedSignedBeaconBlock]
 
   OnForkyBlockAdded* =
     OnPhase0BlockAdded | OnAltairBlockAdded | OnBellatrixBlockAdded |
-    OnCapellaBlockAdded | OnDenebBlockAdded | OnElectraBlockAdded
+    OnCapellaBlockAdded | OnDenebBlockAdded | OnElectraBlockAdded |
+    OnFuluBlockAdded
 
   OnForkedBlockAdded* = proc(
     blckRef: BlockRef, blck: ForkedTrustedSignedBeaconBlock, epochRef: EpochRef,
@@ -340,6 +342,8 @@ type
     optimistic* {.serializedFieldName: "execution_optimistic".}: Option[bool]
 
 template OnBlockAddedCallback*(kind: static ConsensusFork): auto =
+  when kind == ConsensusFork.Fulu:
+    typedesc[OnFuluBlockAdded]
   when kind == ConsensusFork.Electra:
     typedesc[OnElectraBlockAdded]
   elif kind == ConsensusFork.Deneb:

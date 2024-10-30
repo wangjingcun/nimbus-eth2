@@ -153,6 +153,7 @@ type
     capellaIndex*: Option[GeneralizedIndex]
     denebIndex*: Option[GeneralizedIndex]
     electraIndex*: Option[GeneralizedIndex]
+    fuluIndex*: Option[GeneralizedIndex]
 
   KeystoreData* = object
     version*: uint64
@@ -730,13 +731,15 @@ func parseProvenBlockProperty*(propertyPath: string): Result[ProvenProperty, str
       path: propertyPath,
       capellaIndex: some GeneralizedIndex(401),
       denebIndex: some GeneralizedIndex(801),
-      electraIndex: some GeneralizedIndex(801))
+      electraIndex: some GeneralizedIndex(801),
+      fuluIndex: some GeneralizedIndex(801))
   elif propertyPath == ".graffiti":
     ok ProvenProperty(
       path: propertyPath,
       capellaIndex: some GeneralizedIndex(18),
       denebIndex: some GeneralizedIndex(18),
-      electraIndex: some GeneralizedIndex(18))
+      electraIndex: some GeneralizedIndex(18),
+      fuluIndex: some GeneralizedIndex(18))
   else:
     err("Keystores with proven properties different than " &
         "`.execution_payload.fee_recipient` and `.graffiti` " &
@@ -846,10 +849,12 @@ proc readValue*(reader: var JsonReader, value: var RemoteKeystore)
           prop.capellaIndex = some GeneralizedIndex(401)
           prop.denebIndex = some GeneralizedIndex(801)
           prop.electraIndex = some GeneralizedIndex(801)
+          prop.fuluIndex = some GeneralizedIndex(801)
         elif prop.path == ".graffiti":
           prop.capellaIndex = some GeneralizedIndex(18)
           prop.denebIndex = some GeneralizedIndex(18)
           prop.electraIndex = some GeneralizedIndex(801)
+          prop.fuluIndex = some GeneralizedIndex(801)
         else:
           reader.raiseUnexpectedValue("Keystores with proven properties different than " &
                                       "`.execution_payload.fee_recipient` and `.graffiti` " &
