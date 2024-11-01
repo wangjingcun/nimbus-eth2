@@ -2054,11 +2054,9 @@ proc p2pProtocolBackendImpl*(p: P2PProtocol): Backend =
     ##
     ## Implement Senders and Handshake
     ##
-    if msg.kind == msgHandshake:
-      macros.error "Handshake messages are not supported in LibP2P protocols"
-    else:
-      var sendProc = msg.createSendProc()
-      implementSendProcBody sendProc
+
+    var sendProc = msg.createSendProc()
+    implementSendProcBody sendProc
 
     protocol.outProcRegistrations.add(
       newCall(registerMsg,
