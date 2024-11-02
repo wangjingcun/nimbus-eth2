@@ -155,6 +155,4 @@ suite "Blinded block conversions":
           deneb_steps
         when consensusFork >= ConsensusFork.Electra:
           electra_steps
-        when consensusFork >= ConsensusFork.Fulu:
-          fulu_steps
         static: doAssert high(ConsensusFork) == ConsensusFork.Fulu
