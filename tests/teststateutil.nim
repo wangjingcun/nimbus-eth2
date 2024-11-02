@@ -91,7 +91,7 @@ proc getTestStates*(
   if consensusFork >= ConsensusFork.Electra:
     cfg.ELECTRA_FORK_EPOCH = 5.Epoch
   if consensusFork >= ConsensusFork.Fulu:
-    cfg.ELECTRA_FORK_EPOCH = 6.Epoch
+    cfg.FULU_FORK_EPOCH = 6.Epoch
 
   for i, epoch in stateEpochs:
     let slot = epoch.Epoch.start_slot
