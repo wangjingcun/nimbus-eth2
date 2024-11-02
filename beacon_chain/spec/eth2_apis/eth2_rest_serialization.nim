@@ -424,8 +424,6 @@ type
     GetGraffitiResponse |
     GetAggregatedAttestationV2Response
 
-  DecodeConsensysTypes* = ProduceBlindedBlockResponse
-
   RestVersioned*[T] = object
     data*: T
     jsonVersion*: ConsensusFork

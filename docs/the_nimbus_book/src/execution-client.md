@@ -43,7 +43,7 @@ In addition to the era files themselves, you will need at least 200GB of free sp
 
     === "Mainnet"
         * https://mainnet.era.nimbus.team/
-        * https://era1.ethportal.net/
+        * https://mainnet.era1.nimbus.team/
 
     === "Holesky"
         * https://holesky.era.nimbus.team/
